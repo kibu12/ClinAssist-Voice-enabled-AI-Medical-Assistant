@@ -1261,11 +1261,139 @@
                 grid-column: span 1;
             }
         }
+
+        /* ════════════════════════════════════════════════════════
+           AUTH OVERLAY — Login / Sign Up
+        ════════════════════════════════════════════════════════ */
+        #auth-overlay {
+            position: fixed; inset: 0; z-index: 2000;
+            background: linear-gradient(135deg, #f0f6ff 0%, #edf3ff 100%);
+            display: flex; align-items: center; justify-content: center;
+            padding: 1rem;
+        }
+        .auth-card {
+            background: white; border-radius: 20px; padding: 40px 36px;
+            width: 100%; max-width: 420px;
+            box-shadow: 0 20px 60px rgba(37, 99, 235, 0.14);
+            animation: authFadeIn 0.3s ease;
+        }
+        @keyframes authFadeIn {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .auth-logo { text-align: center; margin-bottom: 28px; }
+        .auth-logo h1 { color: #2563eb; font-size: 26px; font-weight: 700; margin: 0 0 4px; }
+        .auth-logo p  { color: #64748b; font-size: 14px; margin: 0; }
+        .auth-tabs {
+            display: flex; gap: 4px; background: #f1f5f9;
+            border-radius: 10px; padding: 4px; margin-bottom: 24px;
+        }
+        .auth-tab {
+            flex: 1; padding: 9px; border: none; background: none;
+            border-radius: 8px; font-size: 14px; font-weight: 500;
+            color: #64748b; cursor: pointer; transition: all 0.2s;
+        }
+        .auth-tab.active {
+            background: white; color: #2563eb;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+        }
+        .auth-field { margin-bottom: 14px; }
+        .auth-field label {
+            display: block; font-size: 13px; font-weight: 500;
+            color: #374151; margin-bottom: 5px;
+        }
+        .auth-field input {
+            width: 100%; padding: 10px 13px; border: 1.5px solid #dbe7ff;
+            border-radius: 9px; font-size: 14px; color: #0f172a;
+            background: #f8fbff; outline: none; transition: border-color 0.2s;
+            box-sizing: border-box;
+        }
+        .auth-field input:focus { border-color: #2563eb; background: white; }
+        .auth-btn {
+            width: 100%; padding: 12px; background: #2563eb; color: white;
+            border: none; border-radius: 10px; font-size: 15px; font-weight: 600;
+            cursor: pointer; margin-top: 6px; transition: background 0.2s;
+        }
+        .auth-btn:hover:not(:disabled) { background: #1d4ed8; }
+        .auth-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+        .auth-error {
+            background: #fef2f2; color: #dc2626; border: 1px solid #fecaca;
+            border-radius: 8px; padding: 9px 13px; font-size: 13px;
+            margin-bottom: 12px; display: none;
+        }
+        .auth-error.visible { display: block; }
+        .auth-hint { text-align: center; font-size: 12px; color: #94a3b8; margin-top: 14px; }
+        /* ── User pill in header ─────────────────────── */
+        #user-pill {
+            display: none; align-items: center; gap: 7px;
+            background: #eff6ff; border: 1px solid #bfdbfe;
+            border-radius: 99px; padding: 5px 13px 5px 6px;
+            font-size: 13px; color: #1d4ed8; cursor: pointer; transition: background 0.15s;
+        }
+        #user-pill:hover { background: #dbeafe; }
+        .pill-avatar {
+            width: 26px; height: 26px; border-radius: 50%;
+            background: #2563eb; color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700; flex-shrink: 0;
+        }
+        #sendReportBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 
 <body>
+
+    <!-- AUTH OVERLAY ─────────────────────────────────── -->
+    <div id="auth-overlay">
+        <div class="auth-card">
+            <div class="auth-logo">
+                <h1>🏥 ClinAssist</h1>
+                <p>Voice-Enabled AI Medical Assistant</p>
+            </div>
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="tab-login"  onclick="switchAuthTab('login')">Login</button>
+                <button class="auth-tab"        id="tab-signup" onclick="switchAuthTab('signup')">Sign Up</button>
+            </div>
+            <div id="auth-error" class="auth-error"></div>
+            <!-- LOGIN -->
+            <div id="login-form">
+                <div class="auth-field">
+                    <label for="login-email">Email Address</label>
+                    <input type="email" id="login-email" placeholder="you@clinic.com" autocomplete="email" />
+                </div>
+                <div class="auth-field">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" />
+                </div>
+                <button class="auth-btn" id="login-btn" onclick="handleLogin()">Login</button>
+                <p class="auth-hint">No account? <a href="#" onclick="switchAuthTab('signup');return false;" style="color:#2563eb;">Sign up</a></p>
+            </div>
+            <!-- SIGN UP -->
+            <div id="signup-form" style="display:none">
+                <div class="auth-field">
+                    <label for="signup-name">Full Name</label>
+                    <input type="text" id="signup-name" placeholder="Dr. Jane Smith" autocomplete="name" />
+                </div>
+                <div class="auth-field">
+                    <label for="signup-userid">Staff / Clinic ID <span style="color:#94a3b8;font-weight:400">(e.g. DR-0042)</span></label>
+                    <input type="text" id="signup-userid" placeholder="DR-0042" autocomplete="off" />
+                </div>
+                <div class="auth-field">
+                    <label for="signup-email">Email Address</label>
+                    <input type="email" id="signup-email" placeholder="you@clinic.com" autocomplete="email" />
+                </div>
+                <div class="auth-field">
+                    <label for="signup-password">Create Password <span style="color:#94a3b8;font-weight:400">(min. 8 chars)</span></label>
+                    <input type="password" id="signup-password" placeholder="••••••••" autocomplete="new-password" />
+                </div>
+                <button class="auth-btn" id="signup-btn" onclick="handleSignup()">Create Account</button>
+                <p class="auth-hint">Have an account? <a href="#" onclick="switchAuthTab('login');return false;" style="color:#2563eb;">Log in</a></p>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <div class="brand-bar">
             <div class="brand-logo" aria-hidden="true">
@@ -1308,6 +1436,12 @@
                         <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9"></path><path d="M3 3v6h6"></path></svg>
                         <span>History</span>
                     </button>
+                    <!-- User pill: visible after login -->
+                    <div id="user-pill" title="Click to log out">
+                        <div class="pill-avatar" id="pill-initials">??</div>
+                        <span id="pill-name">User</span>
+                        <span style="color:#93c5fd;margin-left:2px">· Logout</span>
+                    </div>
                     <div class="status-chip status-ready" id="statusChip" aria-live="polite">
                         <span class="status-dot"></span>
                         <span id="statusText">Ready</span>
@@ -1989,17 +2123,22 @@
             }
 
             // NEW: Show risk badge as soon as it's available (QA or COMPLETE)
-            if (data.risk_assessment) {
-                console.log("DEBUG: Showing risk badge");
-                showRiskBadge(data.risk_assessment);
-                document.getElementById('exportSection').classList.add('active');
-            }
+                if (data.risk_assessment) {
+                    console.log("DEBUG: Showing risk badge");
+                    showRiskBadge(data.risk_assessment);
+                    document.getElementById('exportSection').classList.add('active');
+                }
 
-            // Show interactive blocks if complete
-            if (data.is_complete) {
-                console.log("DEBUG: Session is complete, adding interactive blocks");
-                // NEW: Add interactive block for summary
-                document.getElementById('exportSection').classList.add('active');
+                // Show interactive blocks if complete
+                if (data.is_complete) {
+                    console.log("DEBUG: Session is complete, adding interactive blocks");
+                    document.getElementById('exportSection').classList.add('active');
+
+                    // Auto-save session to Supabase history if logged in
+                if (typeof authToken !== 'undefined' && authToken && sessionId) {
+                    fetch('/session/' + sessionId + '/save-history', { method: 'POST' })
+                        .catch(err => console.warn('History save failed:', err));
+                }
             }
 
             // Play audio response
@@ -2387,6 +2526,149 @@
             loadHistory();
 
         });
+
+        // ════════════════════════════════════════════════════════════════
+        //  AUTH — Login, Sign Up, JWT management
+        // ════════════════════════════════════════════════════════════════
+
+        let authToken   = localStorage.getItem('ca_token') || null;
+        let currentUser = (function() {
+            try { return JSON.parse(localStorage.getItem('ca_user') || 'null'); } catch(e) { return null; }
+        })();
+
+        // Hide overlay immediately if already authenticated
+        (function initAuth() {
+            if (authToken && currentUser) {
+                var ov = document.getElementById('auth-overlay');
+                if (ov) ov.style.display = 'none';
+                _showUserPill(currentUser);
+            }
+        })();
+
+        function switchAuthTab(tab) {
+            ['login','signup'].forEach(function(t) {
+                document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+                document.getElementById(t + '-form').style.display = t === tab ? 'block' : 'none';
+            });
+            var err = document.getElementById('auth-error');
+            err.textContent = '';
+            err.classList.remove('visible');
+        }
+
+        function _authErr(msg) {
+            var el = document.getElementById('auth-error');
+            el.textContent = msg;
+            el.classList.add('visible');
+        }
+
+        function _friendlyAuthError(detail, fallback) {
+            var text = '';
+            if (typeof detail === 'string') text = detail;
+            else if (detail && typeof detail.message === 'string') text = detail.message;
+            else if (detail) text = JSON.stringify(detail);
+
+            if (!text) return fallback;
+            if (text.indexOf('row-level security policy') !== -1 || text.indexOf('42501') !== -1) {
+                return 'Server auth is misconfigured. Please set SUPABASE_SERVICE_ROLE_KEY and restart the backend.';
+            }
+            return text;
+        }
+
+        async function handleLogin() {
+            var email    = document.getElementById('login-email').value.trim();
+            var password = document.getElementById('login-password').value;
+            if (!email || !password) { _authErr('Please fill in both fields.'); return; }
+            var btn = document.getElementById('login-btn');
+            btn.disabled = true; btn.textContent = 'Logging in…';
+            try {
+                var res  = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email, password: password })
+                });
+                var data = await res.json();
+                if (!res.ok) throw new Error(_friendlyAuthError(data.detail, 'Login failed.'));
+                _saveAuth(data);
+            } catch(e) {
+                _authErr(e.message);
+                btn.disabled = false; btn.textContent = 'Login';
+            }
+        }
+
+        async function handleSignup() {
+            var name     = document.getElementById('signup-name').value.trim();
+            var user_id  = document.getElementById('signup-userid').value.trim();
+            var email    = document.getElementById('signup-email').value.trim();
+            var password = document.getElementById('signup-password').value;
+            if (!name || !user_id || !email || !password) { _authErr('Please fill in all fields.'); return; }
+            if (password.length < 8) { _authErr('Password must be at least 8 characters.'); return; }
+            var btn = document.getElementById('signup-btn');
+            btn.disabled = true; btn.textContent = 'Creating account…';
+            try {
+                var res  = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, user_id: user_id, email: email, password: password })
+                });
+                var data = await res.json();
+                if (!res.ok) throw new Error(_friendlyAuthError(data.detail, 'Registration failed.'));
+                _saveAuth(data);
+            } catch(e) {
+                _authErr(e.message);
+                btn.disabled = false; btn.textContent = 'Create Account';
+            }
+        }
+
+        function _saveAuth(data) {
+            authToken   = data.access_token;
+            currentUser = data.user;
+            localStorage.setItem('ca_token', authToken);
+            localStorage.setItem('ca_user',  JSON.stringify(currentUser));
+            document.getElementById('auth-overlay').style.display = 'none';
+            _showUserPill(currentUser);
+        }
+
+        function handleLogout() {
+            if (!confirm('Log out of ClinAssist?')) return;
+            authToken = null; currentUser = null;
+            localStorage.removeItem('ca_token');
+            localStorage.removeItem('ca_user');
+            document.getElementById('user-pill').style.display = 'none';
+            document.getElementById('auth-overlay').style.display = 'flex';
+        }
+
+        function _showUserPill(user) {
+            var pill = document.getElementById('user-pill');
+            if (!pill) return;
+            var initials = (user.name || '?').split(' ').map(function(w){ return w[0]; }).slice(0,2).join('').toUpperCase();
+            document.getElementById('pill-initials').textContent = initials;
+            document.getElementById('pill-name').textContent = user.name;
+            pill.style.display = 'flex';
+            pill.onclick = handleLogout;
+        }
+
+        // ─── Auto-attach Authorization header to all API calls ───────────────
+        var _nativeFetch = window.fetch.bind(window);
+        window.fetch = function(url, options) {
+            options = options || {};
+            if (authToken && typeof url === 'string' &&
+                (url.startsWith('/') || url.startsWith(window.location.origin))) {
+                options.headers = Object.assign({}, options.headers || {},
+                    { 'Authorization': 'Bearer ' + authToken });
+            }
+            return _nativeFetch(url, options);
+        };
+
+        // Enter-key support for login/signup forms
+        document.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter') return;
+            var ov = document.getElementById('auth-overlay');
+            if (!ov || ov.style.display === 'none') return;
+            var lf = document.getElementById('login-form');
+            if (lf && lf.style.display !== 'none') handleLogin();
+            else handleSignup();
+        });
+
     </script>
 </body>
 

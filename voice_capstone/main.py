@@ -1,8 +1,12 @@
 """
 ClinAssist - Speech-Driven Structured Clinical Intake System
 Main FastAPI application with all endpoints
+
+UPDATED: Added /auth/register, /auth/login, /auth/me,
+         /session/{id}/send-report, /session/{id}/save-history,
+         and /user/history routes.
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, Path as FastAPIPath, status, File as FastAPIFile, Form, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Path as FastAPIPath, status, File as FastAPIFile, Form, Query, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
@@ -28,12 +32,20 @@ import intake
 from memory import SessionMemory
 from config import SAFETY_DISCLAIMER, ENABLE_TTS_FOR_TEXT
 
+# ── NEW: Auth + Email imports ─────────────────────────────────────────────────
+from auth import (
+    UserRegister, UserLogin, TokenResponse,
+    register_user, login_user, require_auth, get_current_user,
+    save_session_to_history, get_user_session_history, get_user_by_uid,
+)
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # Initialize FastAPI app
 app = FastAPI(
     title="ClinAssist API",
     description="Speech-Driven Structured Clinical Intake System",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 # CORS middleware for development
@@ -69,11 +81,96 @@ async def health_check():
     }
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  AUTH ROUTES
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.post("/auth/register", response_model=TokenResponse, tags=["auth"])
+async def register(data: UserRegister):
+    """
+    Register a new user account.
+    Required fields: name, user_id (staff/clinic ID), email, password.
+    Returns a JWT access token on success.
+    """
+    user = register_user(data)
+    from auth import create_access_token
+    token = create_access_token({
+        "sub": user.user_id,
+        "email": user.email,
+        "name": user.name,
+    })
+    return TokenResponse(access_token=token, user=user)
+
+
+@app.post("/auth/login", response_model=TokenResponse, tags=["auth"])
+async def login(data: UserLogin):
+    """
+    Log in with email and password.
+    Returns a JWT access token on success.
+    """
+    return login_user(data)
+
+
+@app.get("/auth/me", tags=["auth"])
+async def me(current_user: dict = Depends(require_auth)):
+    """
+    Get the currently authenticated user's profile info.
+    Requires Authorization: Bearer <token> header.
+    """
+    return {
+        "user_id": current_user.get("sub"),
+        "email": current_user.get("email"),
+        "name": current_user.get("name"),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  SESSION HISTORY (Supabase)
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.post("/session/{session_id}/save-history", tags=["sessions"])
+async def save_session_history(
+    session_id: str = FastAPIPath(..., description="Session ID"),
+    current_user: dict = Depends(require_auth),
+):
+    """
+    Save a completed session to the user's Supabase history.
+    If not logged in, the session is only kept in local SQLite (existing behaviour).
+    """
+    if not database.user_can_access_session(session_id, current_user["sub"]):
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    symptom_record = database.get_symptom_record(session_id) or {}
+
+    save_session_to_history(
+        user_id=current_user["sub"],
+        session_id=session_id,
+        chief_complaint=symptom_record.get("chief_complaint"),
+        risk_level=symptom_record.get("risk_level"),
+        summary=symptom_record.get("summary"),
+    )
+
+    return {"message": "Session saved to your history."}
+
+
+@app.get("/user/history", tags=["sessions"])
+async def user_history(current_user: dict = Depends(require_auth)):
+    """
+    Retrieve all session history for the authenticated user from Supabase.
+    """
+    sessions = get_user_session_history(current_user["sub"])
+    return {"sessions": sessions}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  EXISTING ROUTES (unchanged below)
+# ════════════════════════════════════════════════════════════════════════════
+
 @app.post("/session/new", response_model=SessionCreate)
-async def create_new_session():
+async def create_new_session(current_user: dict = Depends(require_auth)):
     """Create a new intake session"""
     try:
-        session_id = database.create_session(session_type="intake")
+        session_id = database.create_session(session_type="intake", user_id=current_user["sub"])
         return {
             "session_id": session_id,
             "message": "Session created successfully"
@@ -88,7 +185,8 @@ async def create_new_session():
 @app.post("/session/{session_id}/voice", response_model=SessionResponse)
 async def process_voice_input(
     session_id: str = FastAPIPath(..., description="Session ID"),
-    audio: UploadFile = File(..., description="Audio file (WAV format)")
+    audio: UploadFile = File(..., description="Audio file (WAV format)"),
+    current_user: dict = Depends(require_auth),
 ):
     """
     Process voice input through complete pipeline: STT → Intake → TTS
@@ -97,24 +195,20 @@ async def process_voice_input(
     latency = {"stt_ms": None, "llm_ms": None, "tts_ms": None, "total_ms": 0}
     
     try:
-        # Validate session exists
-        if not database.session_exists(session_id):
+        if not database.user_can_access_session(session_id, current_user["sub"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "Session not found", "detail": f"Session {session_id} does not exist"}
             )
         
-        # Read audio bytes
         audio_bytes = await audio.read()
         
-        # Validate audio format
         if not stt.validate_audio_format(audio_bytes):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "Invalid audio format", "detail": "Audio must be WAV format (16-bit PCM, 16kHz, mono)"}
             )
         
-        # STT: Transcribe audio
         stt_start = time.time()
         transcript = stt.transcribe_audio(audio_bytes, session_id)
         latency["stt_ms"] = (time.time() - stt_start) * 1000
@@ -125,12 +219,10 @@ async def process_voice_input(
                 detail={"error": "Transcription failed", "detail": "Could not transcribe audio"}
             )
         
-        # Process through intake state machine
         llm_start = time.time()
         result = intake.process_interaction(session_id, transcript)
         latency["llm_ms"] = (time.time() - llm_start) * 1000
         
-        # TTS: Generate speech response (optional for text mode to reduce latency)
         audio_base64 = None
         if ENABLE_TTS_FOR_TEXT:
             tts_start = time.time()
@@ -141,15 +233,12 @@ async def process_voice_input(
         else:
             latency["tts_ms"] = 0.0
         
-        # Calculate total latency
         latency["total_ms"] = (time.time() - total_start) * 1000
         
-        # Get symptom progress
         memory = SessionMemory(session_id)
         symptom_progress = memory.get_progress()
         
-        # Build response
-        response_data = {
+        return {
             "transcript": transcript,
             "response_text": result["response_text"],
             "audio_base64": audio_base64,
@@ -160,8 +249,6 @@ async def process_voice_input(
             "symptom_progress": symptom_progress,
             "wellness_tip": result.get("wellness_tip")
         }
-        
-        return response_data
     
     except HTTPException:
         raise
@@ -175,7 +262,8 @@ async def process_voice_input(
 @app.post("/session/{session_id}/text", response_model=SessionResponse)
 async def process_text_input(
     input_data: TextInput,
-    session_id: str = FastAPIPath(..., description="Session ID")
+    session_id: str = FastAPIPath(..., description="Session ID"),
+    current_user: dict = Depends(require_auth),
 ):
     """
     Process text input (skip STT, use Intake → TTS)
@@ -184,8 +272,7 @@ async def process_text_input(
     latency = {"stt_ms": None, "llm_ms": None, "tts_ms": None, "total_ms": 0}
     
     try:
-        # Validate session exists
-        if not database.session_exists(session_id):
+        if not database.user_can_access_session(session_id, current_user["sub"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "Session not found", "detail": f"Session {session_id} does not exist"}
@@ -200,12 +287,10 @@ async def process_text_input(
                 detail={"error": "Empty input", "detail": "Text input cannot be empty"}
             )
         
-        # Process through intake state machine
         llm_start = time.time()
         result = intake.process_interaction(session_id, text)
         latency["llm_ms"] = (time.time() - llm_start) * 1000
         
-        # TTS: Generate speech response
         tts_start = time.time()
         audio_bytes = tts.generate_speech(result["response_text"], session_id)
         latency["tts_ms"] = (time.time() - tts_start) * 1000
@@ -214,15 +299,12 @@ async def process_text_input(
         if audio_bytes:
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
         
-        # Calculate total latency
         latency["total_ms"] = (time.time() - total_start) * 1000
         
-        # Get symptom progress
         memory = SessionMemory(session_id)
         symptom_progress = memory.get_progress()
         
-        # Build response
-        response_data = {
+        return {
             "transcript": text,
             "response_text": result["response_text"],
             "audio_base64": audio_base64,
@@ -233,8 +315,6 @@ async def process_text_input(
             "symptom_progress": symptom_progress,
             "wellness_tip": result.get("wellness_tip")
         }
-        
-        return response_data
     
     except HTTPException:
         raise
@@ -247,11 +327,12 @@ async def process_text_input(
 
 @app.get("/session/{session_id}/summary", response_model=SummaryResponse)
 async def get_session_summary(
-    session_id: str = FastAPIPath(..., description="Session ID")
+    session_id: str = FastAPIPath(..., description="Session ID"),
+    current_user: dict = Depends(require_auth),
 ):
     """Get session summary with symptom record and risk assessment"""
     try:
-        if not database.session_exists(session_id):
+        if not database.user_can_access_session(session_id, current_user["sub"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "Session not found", "detail": f"Session {session_id} does not exist"}
@@ -266,7 +347,6 @@ async def get_session_summary(
                 detail={"error": "Symptom record not found", "detail": f"No symptom data for session {session_id}"}
             )
         
-        # Extract risk assessment if available
         risk_assessment = None
         if symptom_record.get("risk_level"):
             risk_assessment = {
@@ -275,7 +355,6 @@ async def get_session_summary(
                 "recommended_action": symptom_record.get("recommended_action", "")
             }
         
-        # Normalize potentially legacy values to keep summary endpoint robust
         progression_value = symptom_record.get("progression")
         if progression_value not in {"improving", "worsening", "stable"}:
             progression_value = None
@@ -290,7 +369,6 @@ async def get_session_summary(
         if associated_value is not None and not isinstance(associated_value, list):
             associated_value = None
 
-        # Build symptom record response
         symptom_data = SymptomRecord(
             chief_complaint=symptom_record.get("chief_complaint"),
             duration=symptom_record.get("duration"),
@@ -319,53 +397,44 @@ async def get_session_summary(
 
 
 @app.post("/consult", response_model=ConsultResponse)
-async def process_standalone_consult(
-    request: ConsultRequest
-):
-    """
-    Process standalone Health Consult (general health/fitness Q&A)
-    """
+async def process_standalone_consult(request: ConsultRequest, current_user: dict = Depends(require_auth)):
+    """Process standalone Health Consult (general health/fitness Q&A)"""
     try:
         import llm
         import database
         
-        # Optional context from intake session
         symptom_data = None
         history = []
         context_session_id = request.context_session_id
-        if not context_session_id and request.session_id and database.session_exists(request.session_id):
-            if database.get_session_type(request.session_id) == "intake":
+        if (
+            not context_session_id
+            and request.session_id
+            and database.user_can_access_session(request.session_id, current_user["sub"])
+            and database.get_session_type(request.session_id) == "intake"
+        ):
                 context_session_id = request.session_id
 
-        if context_session_id and database.session_exists(context_session_id):
+        if context_session_id and database.user_can_access_session(context_session_id, current_user["sub"]):
             memory = SessionMemory(context_session_id)
             symptom_data = memory.get_symptom_data()
             history = memory.conversation_history
 
-        # Use only consult session ids for consult conversation history
         if (
             request.session_id
-            and database.session_exists(request.session_id)
+            and database.user_can_access_session(request.session_id, current_user["sub"])
             and database.get_session_type(request.session_id) == "consult"
         ):
             session_id = request.session_id
         else:
             session_id = f"consult_{int(time.time())}"
-            database.create_session(session_id, session_type="consult")
+            database.create_session(session_id, session_type="consult", user_id=current_user["sub"])
             
-        # Log the user's question
         database.save_turn(session_id, "user", request.question)
         
-        answer = llm.respond_to_consult(
-            request.question,
-            symptom_data,
-            history
-        )
+        answer = llm.respond_to_consult(request.question, symptom_data, history)
         
-        # Log the bot's response
         database.save_turn(session_id, "assistant", answer)
         
-        # TTS: Generate speech response (optional for text mode)
         audio_base64 = None
         if ENABLE_TTS_FOR_TEXT:
             try:
@@ -376,11 +445,7 @@ async def process_standalone_consult(
             except Exception as e:
                 logger.error(f"Failed to generate TTS for consult: {e}")
         
-        return {
-            "answer": answer,
-            "audio_base64": audio_base64,
-            "session_id": session_id
-        }
+        return {"answer": answer, "audio_base64": audio_base64, "session_id": session_id}
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -392,25 +457,22 @@ async def process_standalone_consult(
 async def process_standalone_voice_consult(
     audio: UploadFile = FastAPIFile(...),
     session_id: Optional[str] = Form(None),
-    context_session_id: Optional[str] = Form(None)
+    context_session_id: Optional[str] = Form(None),
+    current_user: dict = Depends(require_auth),
 ):
-    """
-    Process standalone Health Consult using voice input
-    """
+    """Process standalone Health Consult using voice input"""
     try:
         import stt
         import llm
         import tts
         import database
         
-        # 1. Read Audio
         audio_content = await audio.read()
         if not audio_content:
             raise HTTPException(status_code=400, detail="Empty audio file")
             
         temp_session = f"consult_{int(time.time())}"
         
-        # 2. STT
         transcript = stt.transcribe_audio(audio_content, temp_session)
         if not transcript or not transcript.strip():
             return {
@@ -419,39 +481,38 @@ async def process_standalone_voice_consult(
                 "audio_base64": None
             }
             
-        # 3. Context gathering
         symptom_data = None
         history = []
         actual_context_session_id = context_session_id
-        if not actual_context_session_id and session_id and database.session_exists(session_id):
-            if database.get_session_type(session_id) == "intake":
+        if (
+            not actual_context_session_id
+            and session_id
+            and database.user_can_access_session(session_id, current_user["sub"])
+            and database.get_session_type(session_id) == "intake"
+        ):
                 actual_context_session_id = session_id
 
-        if actual_context_session_id and database.session_exists(actual_context_session_id):
+        if actual_context_session_id and database.user_can_access_session(actual_context_session_id, current_user["sub"]):
             memory = SessionMemory(actual_context_session_id)
             symptom_data = memory.get_symptom_data()
             history = memory.conversation_history
 
-        if session_id and database.session_exists(session_id) and database.get_session_type(session_id) == "consult":
+        if (
+            session_id
+            and database.user_can_access_session(session_id, current_user["sub"])
+            and database.get_session_type(session_id) == "consult"
+        ):
             actual_session_id = session_id
         else:
             actual_session_id = temp_session
-            database.create_session(actual_session_id, session_type="consult")
+            database.create_session(actual_session_id, session_type="consult", user_id=current_user["sub"])
             
-        # Log user question
         database.save_turn(actual_session_id, "user", transcript)
             
-        # 4. LLM
-        answer = llm.respond_to_consult(
-            transcript,
-            symptom_data,
-            history
-        )
+        answer = llm.respond_to_consult(transcript, symptom_data, history)
         
-        # Log assistant response
         database.save_turn(actual_session_id, "assistant", answer)
         
-        # 5. TTS
         audio_base64 = None
         audio_bytes = tts.generate_speech(answer, actual_session_id)
         if audio_bytes:
@@ -474,7 +535,8 @@ async def process_standalone_voice_consult(
 
 @app.get("/sessions", response_model=SessionHistoryResponse)
 async def list_sessions(
-    session_type: Optional[str] = Query(None, description="Filter by session type: intake or consult")
+    session_type: Optional[str] = Query(None, description="Filter by session type: intake or consult"),
+    current_user: dict = Depends(require_auth),
 ):
     """List recent sessions"""
     if session_type and session_type not in {"intake", "consult"}:
@@ -483,31 +545,31 @@ async def list_sessions(
             detail={"error": "Invalid session type", "detail": "session_type must be 'intake' or 'consult'"}
         )
 
-    sessions = database.get_recent_sessions(limit=20, session_type=session_type)
+    sessions = database.get_recent_sessions(limit=20, session_type=session_type, user_id=current_user["sub"])
     return {"sessions": sessions}
 
 
 @app.get("/session/{session_id}", response_model=FullSessionResponse)
-async def get_session(session_id: str = FastAPIPath(..., description="Session ID")):
+async def get_session(
+    session_id: str = FastAPIPath(..., description="Session ID"),
+    current_user: dict = Depends(require_auth),
+):
     """Get full session data including history and state"""
-    data = database.get_session_export_data(session_id)
+    data = database.get_session_export_data(session_id, user_id=current_user["sub"])
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "Session not found", "detail": f"No session found with ID {session_id}"}
         )
     
-    # Load state from database directly as export_data might have raw state
     state = database.get_session_state(session_id)
     
-    # Reconstruct risk assessment and wellness tip if complete
     risk_assessment = None
     wellness_tip = None
     if state == "complete":
         import risk
         import llm
         symptom_data = data["symptom_record"]
-        # Use existing risk data if available in symptom_record
         if symptom_data.get("risk_level"):
             risk_assessment = {
                 "risk_level": symptom_data["risk_level"],
@@ -535,17 +597,18 @@ async def get_session(session_id: str = FastAPIPath(..., description="Session ID
 
 @app.get("/session/{session_id}/export", response_class=PlainTextResponse)
 async def export_session(
-    session_id: str = FastAPIPath(..., description="Session ID")
+    session_id: str = FastAPIPath(..., description="Session ID"),
+    current_user: dict = Depends(require_auth),
 ):
     """Export session data in doctor-ready text format"""
     try:
-        if not database.session_exists(session_id):
+        if not database.user_can_access_session(session_id, current_user["sub"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "Session not found", "detail": f"Session {session_id} does not exist"}
             )
         
-        export_data = database.get_session_export_data(session_id)
+        export_data = database.get_session_export_data(session_id, user_id=current_user["sub"])
         
         if not export_data:
             raise HTTPException(
@@ -553,7 +616,6 @@ async def export_session(
                 detail={"error": "Export failed", "detail": "No data available for export"}
             )
         
-        # Format as doctor-ready report
         report_lines = []
         report_lines.append("=" * 70)
         report_lines.append("CLINASSIST - PATIENT INTAKE SUMMARY")
