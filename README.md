@@ -40,7 +40,7 @@ This is an academic demonstration project for structured data collection only.
 | Speech-to-Text | API-based STT            | whisper-1        |
 | LLM            | API-based LLM            | gemini-2.5-flash |
 | Text-to-Speech | API-based TTS            | gpt-4o-mini-tts  |
-| Database       | SQLite                   | -                |
+| Database       | Supabase                   | -                |
 | Frontend       | HTML/CSS/JavaScript      | -                |
 | Evaluation     | Custom WER (Levenshtein) | -                |
 
